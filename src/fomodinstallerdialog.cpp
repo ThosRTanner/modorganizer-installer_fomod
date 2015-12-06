@@ -19,24 +19,30 @@ along with Mod Organizer.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "fomodinstallerdialog.h"
 
+#include "imoinfo.h"
+#include "iplugingame.h"
 #include "report.h"
-#include "utility.h"
+#include "scopeguard.h"
+#include "scriptextender.h"
 #include "ui_fomodinstallerdialog.h"
+#include "utility.h"
 #include "xmlreader.h"
 
-#include <scopeguard.h>
-#include <QFile>
-#include <QDir>
-#include <QDebug>
-#include <QImage>
 #include <QCheckBox>
+#include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QImage>
 #include <QRadioButton>
 #include <QScrollArea>
 #include <QTextCodec>
-#include <Shellapi.h>
-#include <boost/assign.hpp>
-#include <sstream>
 
+#include <Shellapi.h>
+
+#include <boost/assign.hpp>
+
+#include <array>
+#include <sstream>
 
 using namespace MOBase;
 
@@ -114,9 +120,6 @@ int FomodInstallerDialog::bomOffset(const QByteArray &buffer)
 
   return 0;
 }
-
-#pragma message("implement module dependencies->file dependencies")
-
 
 struct XmlParseError : std::runtime_error {
   XmlParseError(const QString &message)
@@ -250,8 +253,10 @@ void FomodInstallerDialog::readModuleConfigXml()
   }
 }
 
-void FomodInstallerDialog::initData()
+void FomodInstallerDialog::initData(IOrganizer *moInfo)
 {
+  m_MoInfo = moInfo;
+
   // parse provided package information
   readInfoXml();
 
@@ -276,6 +281,11 @@ QString FomodInstallerDialog::getVersion() const
 int FomodInstallerDialog::getModID() const
 {
   return m_ModID;
+}
+
+QString FomodInstallerDialog::getURL() const
+{
+  return m_URL;
 }
 
 void FomodInstallerDialog::moveTree(DirectoryTree::Node *target, DirectoryTree::Node *source, DirectoryTree::Overwrites *overwrites)
@@ -464,6 +474,62 @@ bool FomodInstallerDialog::testCondition(int, const FileCondition *condition) co
   return toString(m_FileCheck(condition->m_File)) == condition->m_State;
 }
 
+namespace {
+class Version
+{
+public:
+  explicit Version(QString const &v);
+
+  friend bool operator<=(Version const &, Version const &);
+
+private:
+  std::array<int, 4> m_version;
+};
+
+Version::Version(QString const &v)
+{
+  std::istringstream parser(v.toStdString());
+  m_version.fill(0);
+  parser >> m_version[0];
+  for (int idx = 1; idx < 4; idx++)
+  {
+      parser.get(); //Skip period
+      parser >> m_version[idx];
+  }
+}
+
+bool operator<=(Version const &lhs, Version const &rhs)
+{
+  return lhs.m_version <= rhs.m_version;
+}
+
+}
+bool FomodInstallerDialog::testCondition(int, const VersionCondition *condition) const
+{
+  QString version;
+  MOBase::IPluginGame const *game = m_MoInfo->managedGame();
+
+  switch (condition->m_Type) {
+    case VersionCondition::v_Game: {
+      version = game->getGameVersion();
+    } break;
+
+    case VersionCondition::v_FOMM:
+      //We should use m_MoInfo->appVersion() but then we wouldn't be able to
+      //install anything as MO is at 0.3.11 at the time of writing.
+      version = "0.13.21";
+      break;
+
+    case VersionCondition::v_FOSE: {
+      ScriptExtender *extender = game->feature<ScriptExtender>();
+      if (extender != nullptr) {
+        version = extender->getExtenderVersion();
+      }
+    } break;
+  }
+  return Version(condition->m_RequiredVersion) <= Version(version);
+}
+
 DirectoryTree *FomodInstallerDialog::updateTree(DirectoryTree *tree)
 {
   FileDescriptorList descriptorList;
@@ -575,9 +641,9 @@ void FomodInstallerDialog::parseInfo(QXmlStreamReader &reader)
         } else if (reader.name() == "Id") {
           m_ModID = readContent(reader).toInt();
         } else if (reader.name() == "Website") {
-          QString url = readContent(reader);
-          ui->websiteLabel->setText(tr("<a href=\"%1\">Link</a>").arg(url));
-          ui->websiteLabel->setToolTip(url);
+          m_URL = readContent(reader);
+          ui->websiteLabel->setText(tr("<a href=\"%1\">Link</a>").arg(m_URL));
+          ui->websiteLabel->setToolTip(m_URL);
         }
       } break;
       default: {} break;
@@ -926,7 +992,6 @@ void FomodInstallerDialog::readPluginList(XmlReader &reader, QString const &grou
 
 void FomodInstallerDialog::readGroup(XmlReader &reader, QLayout *layout)
 {
-  //FileGroup result;
   QString name = reader.attributes().value("name").toString();
   GroupType type = getGroupType(reader.attributes().value("type").toString());
 
@@ -946,7 +1011,6 @@ void FomodInstallerDialog::readGroup(XmlReader &reader, QLayout *layout)
   groupLayout->setProperty("groupType", qVariantFromValue(type));
   groupLayout->setObjectName("grouplayout");
   groupBox->setLayout(groupLayout);
-
   if (type == TYPE_SELECTATLEASTONE) {
     QLabel *label = new QLabel(tr("Select one or more of these options:"));
     layout->addWidget(label);
@@ -1051,18 +1115,28 @@ void FomodInstallerDialog::readCompositeDependency(XmlReader &reader, SubConditi
 
   QString const self = reader.name().toString();
   while (reader.getNextElement(self)) {
-    if (reader.name() == "fileDependency") {
+    QStringRef name = reader.name();
+    if (name == "fileDependency") {
       conditional.m_Conditions.push_back(new FileCondition(reader.attributes().value("file").toString(),
                                                            reader.attributes().value("state").toString()));
       reader.finishedElement();
-    } else if (reader.name() == "flagDependency") {
+    } else if (name == "flagDependency") {
       conditional.m_Conditions.push_back(new ValueCondition(reader.attributes().value("flag").toString(),
                                                             reader.attributes().value("value").toString()));
       reader.finishedElement();
-    // FIXME else if gameDependency
-    // FIXME else if fommDependency
-    // FIXME else if foseDependency
-    } else if (reader.name() == "dependencies") {
+    } else if (name == "gameDependency") {
+      conditional.m_Conditions.push_back(new VersionCondition(VersionCondition::v_Game,
+                                                              reader.attributes().value("version").toString()));
+      reader.finishedElement();
+    } else if (name == "fommDependency") {
+      conditional.m_Conditions.push_back(new VersionCondition(VersionCondition::v_FOMM,
+                                                              reader.attributes().value("version").toString()));
+      reader.finishedElement();
+    } else if (name == "foseDependency") {
+      conditional.m_Conditions.push_back(new VersionCondition(VersionCondition::v_FOSE,
+                                                              reader.attributes().value("version").toString()));
+      reader.finishedElement();
+    } else if (name == "dependencies") {
       SubCondition *nested = new SubCondition();
       readCompositeDependency(reader, *nested);
       conditional.m_Conditions.push_back(nested);
@@ -1130,23 +1204,25 @@ void FomodInstallerDialog::readModuleConfiguration(XmlReader &reader)
   //  optional - conditionalFileInstalls
   QString const self(reader.name().toString());
   while (reader.getNextElement(self)) {
-    if (reader.name() == "moduleName") {
+    QStringRef name = reader.name();
+    if (name == "moduleName") {
       QString title = reader.getText();
       qDebug() << "module name : "  << title;
-    } else if (reader.name() == "moduleImage") {
+    } else if (name == "moduleImage") {
       //do something useful with the attributes of this
       reader.finishedElement();
-    } else if (reader.name() == "moduleDependencies") {
-      // skip the content of the inside moduleDependencies as we can't handle it
-      reader.readElementText(XmlReader::IncludeChildElements);
-      //FIXME do something useful with the condition dependencies
-      //readCompositeDependency
-      qWarning() << "Module dependencies not yet implemented";
-    } else if (reader.name() == "requiredInstallFiles") {
+    } else if (name == "moduleDependencies") {
+      SubCondition condition;
+      readCompositeDependency(reader, condition);
+      if (!testCondition(-1, &condition)) {
+        //TODO Better messages?
+        throw MyException("This module is not usable with this setup");
+      }
+    } else if (name == "requiredInstallFiles") {
       readFileList(reader, m_RequiredFiles);
-    } else if (reader.name() == "installSteps") {
+    } else if (name == "installSteps") {
       readStepList(reader);
-    } else if (reader.name() == "conditionalFileInstalls") {
+    } else if (name == "conditionalFileInstalls") {
       readConditionalFileInstallList(reader);
     } else {
       reader.unexpected();
@@ -1286,13 +1362,51 @@ void FomodInstallerDialog::widgetButtonClicked()
 {
   //A button has been clicked. At the moment we do nothing with this
   //beyond checking the next button state
-  //FIXME: At this point we should check if this button is part of a group
-  //which requires at least one entry to be selected and disallow turning off.
   updateNextbtnText();
 }
 
 void FomodInstallerDialog::updateNextbtnText()
 {
+  //First we see if we can actually allow the 'next' button. Specifically, this
+  //is a test to ensure that you have selected at least one item in a
+  //'select at least one' box.
+  int const page = ui->stepsStack->currentIndex();
+  QStringList groups_requiring_selection;
+  for (QVBoxLayout const * const layout : ui->stepsStack->widget(page)->findChildren<QVBoxLayout*>("grouplayout")) {
+    GroupType const groupType(layout->property("groupType").value<GroupType>());
+    if (groupType == TYPE_SELECTATLEASTONE) {
+      //Check at least one of this group is ticked
+      bool checked = false;
+      for (int i = 0; i != layout->count(); ++i) {
+        if (QLayoutItem * item = layout->itemAt(i)) {
+          QAbstractButton * const choice = dynamic_cast<QAbstractButton *>(item->widget());
+          if (choice != nullptr) {
+            if (choice->objectName() == "choice" && choice->isChecked()) {
+              checked = true;
+              break;
+            }
+          }
+        }
+      }
+      if (!checked) {
+        QString group = dynamic_cast<QGroupBox*>(layout->parentWidget())->title();
+        qDebug() << "Group " << group << " needs a selection";
+        groups_requiring_selection.append(group);
+      }
+    }
+  }
+
+  if (groups_requiring_selection.size() != 0) {
+    ui->nextBtn->setText(tr("Disabled"));
+    ui->nextBtn->setEnabled(false);
+    ui->nextBtn->setToolTip(tr("This button is disabled because the following group(s) need a selection: ") +
+                            groups_requiring_selection.join(", "));
+    return;
+  }
+
+  //OK, clear up any warnings
+  ui->nextBtn->setToolTip("");
+
   //Display 'next' or 'install' as appropriate for the next button.
   //note this can change depending on what buttons you click here.
 
@@ -1302,8 +1416,7 @@ void FomodInstallerDialog::updateNextbtnText()
   });
 
   bool isLast = true;
-  for (int index = ui->stepsStack->currentIndex() + 1;
-       index != ui->stepsStack->count(); ++index) {
+  for (int index = page + 1; index != ui->stepsStack->count(); ++index) {
     if (testVisible(index)) {
       isLast = false;
       break;
@@ -1311,6 +1424,7 @@ void FomodInstallerDialog::updateNextbtnText()
     m_PageVisible.push_back(false);
   }
 
+  ui->nextBtn->setEnabled(true);
   ui->nextBtn->setText(isLast ? tr("Install") : tr("Next"));
 }
 

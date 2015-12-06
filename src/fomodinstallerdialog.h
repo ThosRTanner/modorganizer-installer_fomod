@@ -39,11 +39,15 @@ namespace Ui {
 class FomodInstallerDialog;
 }
 
+namespace MOBase {
+ class IOrganizer;
+}
 
 class ValueCondition;
 class ConditionFlag;
 class SubCondition;
 class FileCondition;
+class VersionCondition;
 
 class XmlReader;
 
@@ -53,6 +57,7 @@ public:
   virtual bool testCondition(int maxIndex, const ConditionFlag *condition) const = 0;
   virtual bool testCondition(int maxIndex, const SubCondition *condition) const = 0;
   virtual bool testCondition(int maxIndex, const FileCondition *condition) const = 0;
+  virtual bool testCondition(int maxIndex, const VersionCondition *condition) const = 0;
 };
 
 
@@ -107,6 +112,17 @@ public:
 };
 Q_DECLARE_METATYPE(SubCondition)
 
+class VersionCondition : public Condition {
+public:
+  enum Type { v_Game, v_FOMM, v_FOSE };
+  VersionCondition() : Condition(), m_Type(), m_RequiredVersion() {}
+  VersionCondition(Type type, const QString &requiredVersion) : Condition(), m_Type(type), m_RequiredVersion(requiredVersion) { }
+  virtual bool test(int maxIndex, const IConditionTester *tester) const { return tester->testCondition(maxIndex, this); }
+  Type m_Type;
+  QString m_RequiredVersion;
+};
+Q_DECLARE_METATYPE(VersionCondition)
+
 
 class FileDescriptor : public QObject {
   Q_OBJECT
@@ -149,7 +165,7 @@ public:
                                 QWidget *parent = 0);
   ~FomodInstallerDialog();
 
-  void initData();
+  void initData(MOBase::IOrganizer *moInfo);
 
   /**
    * @return bool true if the user requested the manual dialog
@@ -170,6 +186,11 @@ public:
    * @return the mod id as specified in the info.xml
    */
   int getModID() const;
+
+  /**
+   * @return the mod url as specified in the fomod file
+   */
+  QString getURL() const;
 
   /**
    * @brief retrieve the updated archive tree from the dialog. The caller is responsible to delete the returned tree.
@@ -315,6 +336,7 @@ private:
   virtual bool testCondition(int maxIndex, const ConditionFlag *condition) const;
   virtual bool testCondition(int maxIndex, const SubCondition *condition) const;
   virtual bool testCondition(int maxIndex, const FileCondition *condition) const;
+  virtual bool testCondition(int maxIndex, const VersionCondition *condition) const;
   bool testVisible(int pageIndex) const;
   bool nextPage();
   void activateCurrentPage();
@@ -354,6 +376,12 @@ private:
   //Because NMM maintains the sequence from the xml when dealing with things with
   //the same priority, we have to as well. This is moderately hacky.
   int m_FileSystemItemSequence;
+
+  //So I can find out game info (I hope)
+  MOBase::IOrganizer *m_MoInfo;
+
+  //The web page in the fomod (if supplied)
+  QString m_URL;
 
 };
 
