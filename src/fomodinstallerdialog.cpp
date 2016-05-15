@@ -401,7 +401,7 @@ void FomodInstallerDialog::applyPriority(Leaves *leaves, DirectoryTree::Node *no
 {
   for (DirectoryTree::leaf_iterator iter = node->leafsBegin(); iter != node->leafsEnd(); ++iter) {
     LeafInfo info = { priority, node->getFullPath(&*iter) };
-    leaves->insert(std::make_pair(iter->getIndex(), info));
+    leaves->insert(std::make_pair(static_cast<int>(iter->getIndex()), info));
   }
   for (DirectoryTree::node_iterator iter = node->nodesBegin(); iter != node->nodesEnd(); ++iter) {
     applyPriority(leaves, *iter, priority);
@@ -466,7 +466,7 @@ QString FomodInstallerDialog::toString(IPluginList::PluginStates state)
   if (state.testFlag(IPluginList::STATE_MISSING)) return "Missing";
   if (state.testFlag(IPluginList::STATE_INACTIVE)) return "Inactive";
   if (state.testFlag(IPluginList::STATE_ACTIVE)) return "Active";
-  throw MyException(tr("invalid plugin state"));
+  throw MyException(tr("invalid plugin state %1").arg(state));
 }
 
 bool FomodInstallerDialog::testCondition(int, const FileCondition *condition) const
@@ -1471,13 +1471,20 @@ void FomodInstallerDialog::displayCurrentPage()
         control->setEnabled(true);
         switch (type) {
           case TYPE_REQUIRED: {
-            if (groupType == TYPE_SELECTEXACTLYONE) {
-              qWarning() << "A 'required' plugin when you're only allowed to select exactly one is probably wrong";
-            } else if (groupType == TYPE_SELECTATMOSTONE) {
-              qWarning() << "A 'required' plugin when you're only allowed to select at most one is probably wrong";
+            if ((groupType == TYPE_SELECTEXACTLYONE)
+                || (groupType == TYPE_SELECTATMOSTONE)) {
+              // This only makes sense if the option may be disabled through
+              // conditions, so that if the conditions are met, this option is
+              // forced, otherwise the user can pick.
+              // This means that in this case the option is forced, and no user
+              // selection should be possible
+              for (QAbstractButton *groupControl : controls) {
+                groupControl->setEnabled(false);
+              }
+            } else {
+              control->setEnabled(false);
             }
             control->setChecked(true);
-            control->setEnabled(false);
             control->setToolTip(tr("This component is required"));
           } break;
           case TYPE_RECOMMENDED: {
